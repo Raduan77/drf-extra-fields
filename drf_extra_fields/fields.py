@@ -2,13 +2,13 @@ import base64
 import binascii
 import imghdr
 import io
+import logging
 import uuid
 
+from django.core import checks
 from django.core.exceptions import ValidationError
 from django.core.files.base import ContentFile
-from django.contrib.postgres import fields as postgres_fields
 from django.utils.translation import gettext_lazy as _
-from psycopg2.extras import DateRange, DateTimeTZRange, NumericRange
 from rest_framework.fields import (
     DateField,
     DateTimeField,
@@ -24,6 +24,17 @@ from rest_framework.serializers import ModelSerializer
 from rest_framework.utils import html
 from drf_extra_fields import compat
 
+try:
+    from django.contrib.postgres import fields as postgres_fields
+    from psycopg2.extras import DateRange, DateTimeTZRange, NumericRange
+except:
+    postgres_fields = None
+    DateRange = None
+    DateTimeTZRange = None
+    NumericRange = None
+
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_CONTENT_TYPE = "application/octet-stream"
 
@@ -177,6 +188,27 @@ class RangeField(DictField):
         'bound_ordering': _('The start of the range must not exceed the end of the range.'),
     })
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        checks = self.check()
+
+        for check in checks:
+            logger.error(check)
+
+    def check(self, **kwargs):
+        """Check if postgres is none. you can also extend this function to check more things.
+        """
+        errors = []
+        if postgres_fields is None:
+            errors.append(
+                checks.Error(
+                    "'psgl2' is required to use {name}".format(name=self.__class__.__name__),
+                    hint="Install the 'psycopg2' library from 'pip'",
+                    obj=self
+                )
+            )
+        return errors
+
     def to_internal_value(self, data):
         """
         Range instances <- Dicts of primitive datatypes.
@@ -221,23 +253,13 @@ class RangeField(DictField):
         """
         Range instances -> dicts of primitive datatypes.
         """
-        if isinstance(value, dict):
-            if not value:
-                return value
-
-            lower = value.get("lower")
-            upper = value.get("upper")
-            bounds = value.get("bounds")
-        else:
-            if value.isempty:
-                return {'empty': True}
-            lower = value.lower
-            upper = value.upper
-            bounds = value._bounds
-
-        return {'lower': self.child.to_representation(lower) if lower is not None else None,
-                'upper': self.child.to_representation(upper) if upper is not None else None,
-                'bounds': bounds}
+        if value.isempty:
+            return {'empty': True}
+        lower = self.child.to_representation(value.lower) if value.lower is not None else None
+        upper = self.child.to_representation(value.upper) if value.upper is not None else None
+        return {'lower': lower,
+                'upper': upper,
+                'bounds': value._bounds}
 
     def get_initial(self):
         initial = super().get_initial()
@@ -269,15 +291,15 @@ class DateRangeField(RangeField):
     range_type = DateRange
 
 
-# monkey patch modelserializer to map Native django Range fields to
-# drf_extra_fiels's Range fields.
-
-ModelSerializer.serializer_field_mapping[postgres_fields.DateTimeRangeField] = DateTimeRangeField
-ModelSerializer.serializer_field_mapping[postgres_fields.DateRangeField] = DateRangeField
-ModelSerializer.serializer_field_mapping[postgres_fields.IntegerRangeField] = IntegerRangeField
-ModelSerializer.serializer_field_mapping[postgres_fields.DecimalRangeField] = DecimalRangeField
-if compat.FloatRangeField:
-    ModelSerializer.serializer_field_mapping[compat.FloatRangeField] = FloatRangeField
+if postgres_fields:
+    # monkey patch modelserializer to map Native django Range fields to
+    # drf_extra_fiels's Range fields.
+    ModelSerializer.serializer_field_mapping[postgres_fields.DateTimeRangeField] = DateTimeRangeField
+    ModelSerializer.serializer_field_mapping[postgres_fields.DateRangeField] = DateRangeField
+    ModelSerializer.serializer_field_mapping[postgres_fields.IntegerRangeField] = IntegerRangeField
+    ModelSerializer.serializer_field_mapping[postgres_fields.DecimalRangeField] = DecimalRangeField
+    if compat.FloatRangeField:
+        ModelSerializer.serializer_field_mapping[compat.FloatRangeField] = FloatRangeField
 
 
 class LowercaseEmailField(EmailField):
